@@ -4,6 +4,11 @@
 ## Abstract
 an approximate Maximum-Likelihood learning algorithm  proposed by G. Hinton(2002) for energy-based models or Markov networks
 
+
+CD is a general MCMC gradient ascent learning algorithm particularly well suited to learning Product of Experts (PoE)
+and energy-based (Gibbs distributions, etc.) model parameters. 
+
+
 Notations:
 
 - $\langle\cdot\rangle_{p}$: expection under distr. $p$
@@ -97,11 +102,22 @@ $G_{\theta,x}:=\frac{\partial E(x;\theta)}{\partial\theta}:|\Theta|\times |\math
 
 $\frac{\partial \bar{l}(\theta)}{\partial\theta} = Gp_d-Gp_\theta\approx Gp_d - Gp^k, p_{.}:\Delta^{|\mathcal{X}|-1}$
 
-## Summary
+## Convergence
 
-CD is a general MCMC gradient ascent learning algorithm particularly well suited to learning Product of Experts (PoE)
-and energy-based (Gibbs distributions, etc.) model parameters. 
+Expect of the update:
+$$
+E\Delta\theta \propto \langle \frac{\partial E(x;\theta)}{\partial\theta} \rangle_{p^{0}(x)}- \langle \frac{\partial E(x;\theta)}{\partial\theta} \rangle_{\int K(x^k|x)p^0(x)}
+$$
+where $K(\cdot|\cdot)$ is the kenerl of MCMC.
 
+Bias to ML:
+$$
+\langle \frac{\partial E(x;\theta)}{\partial\theta} \rangle_{p(x|\theta)}- \langle \frac{\partial E(x;\theta)}{\partial\theta} \rangle_{\int K(x^k|x)p^0(x)}
+$$
+
+in discrete form: $G(p_\theta - K^kp_0)$
+
+*Conclusion* The speed of convergence of CD depends on the expression of $E$ and that of MCMC
 
 ## Application
 
@@ -119,7 +135,7 @@ $\Delta w_{ij}=\eta(\langle x_ix_j\rangle_{x^0}-\langle x_ix_j\rangle_{x^k})$
 
 matrix form: $\Delta W=\eta(\langle x\circ x\rangle_{x^0}-\langle x\circ x\rangle_{x^k})$
 
-Algo.
+*Algo.*
 input $X$
 1. initialize $W$
 2. $X^1$ by MCMC from $X^0$
@@ -145,6 +161,10 @@ $$
 - update $W$ by $\langle x\circ E(z|x) \rangle_{X^0} -\langle x\circ E(z|x) \rangle_{X^1}$
 
 *Remark.* if $z|x\sim B(p(z=1|x))$, then $E(z|x)=p(z=1|x)=\mathrm{expit}(x^TW)$
+
+
+*Remark.* The joint distr. of RBM has form $\frac{1}{Z(W,\alpha,\beta)}e^{x^TWz+x^T\alpha+\beta^T z}$.
+
 
 ### ICA
 $$

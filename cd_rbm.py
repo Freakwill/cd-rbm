@@ -3,10 +3,11 @@
 """
 CD for RBM
 
+version = 1.0
+
 *Reference*
 Geoffrey E. Hinton. Training Products of Experts by Minimizing Contrastive Divergence.
 Miguel A. Carreira-Perpinnaan, Geoffrey E. Hinton. On Contrastive Divergence Learning.
-
 """
 
 import numpy as np
@@ -18,27 +19,28 @@ from sklearn.base import TransformerMixin
 
 
 
-def gibbs(x, W, nx, mc_iter=1):
-    """Gibbs sampling
+def _gibbs(x, W, nx, mc_iter=1):
+    """Gibbs sampling for RBM
     """
     p, r = W.shape
 
+    x = np.append(x, [1])
+
     pz = expit(np.dot(x, W))
     z = np.random.random(r) < pz
-    x[-1] = z[-1] = pz[-1] = 1
+    z[-1] = pz[-1] = 1
     for _ in range(mc_iter):
-        ps = np.cumsum(softmax(np.column_stack([x * np.dot(W, z) for x in range(nx)]), axis=1), axis=1)
+        ps = np.cumsum(softmax(np.outer(np.dot(W, z), np.arange(nx)), axis=1), axis=1)
         rv = np.random.random(p)
-        # x1 = [np.where(rvi<pi)[0][0] for rvi, pi in zip(rv, ps)]
-        x1 = np.array([np.where(k)[0][0] for k in (rv[:,None] < ps)])
-        # np.array([rv_discrete(values=(xs, softmax([x * np.dot(W[j,:], z) for x in xs]))).rvs() for j in range(p)])
+        x1 = np.apply_along_axis(lambda x:np.where(x)[0][0], 1, rv[:,None]<ps)
         pz1 = expit(np.dot(x1, W))
         z = np.random.random(r) < pz1
         x1[-1] = z[-1] = pz1[-1] = 1
-    return x1, pz, pz1
+    return x1[:-1], pz[:-1], pz1[:-1]
 
-def binary_gibbs(x, W, mc_iter=1):
-    """Gibbs sampling
+def _binary_gibbs(x, W, mc_iter=1):
+    """
+    Gibbs sampling for binary RBM
     """
     p, r = W.shape
 
@@ -91,35 +93,51 @@ class CDRBM(TransformerMixin):
         self.bias = bias
         self.n_values = 2
 
-    def grad_energy(self, x, z):
-        return np.outer(x, z)
-
 
     def init(self, X):
-        if self.bias:
-            X = np.insert(X, -1, 1, axis=1)
         n_samples, self.n_features_ = X.shape
-        self.weight_ = np.zeros((self.n_features_, self.ndim_latens))
-        return X
+        self.weight_ = np.zeros((self.n_features_+1, self.ndim_latens+1))
+
+    @property
+    def W_(self):
+        return self.weight_[:-1, :-1]
+
+    @property
+    def alpha_(self):
+        return self.weight_[:-1, -1]
+
+    @property
+    def beta_(self):
+        return self.weight_[-1, :-1]
+
+
+    def denergy(self, x, z):
+        return np.block([[np.outer(x, z), x[:,None]], [z, 1]])
+
+    def energy_x(self, z):
+        return np.dot(self.W_, z)+self.alpha_
+
+    def energy_z(self, x):
+        return np.dot(x, self.W_)+self.beta_
 
 
     def mcmc(self, x, mc_iter=None):
-        return gibbs(x, self.weight_, self.n_values, mc_iter or self.mc_iter)
+        return _gibbs(x, self.weight_, self.n_values, mc_iter or self.mc_iter)
 
 
     def transform(self, X):
-        return np.row_stack([np.random.random(self.ndim_latens) < expit(np.dot(x1, W)) for x1 in X])
+        return np.apply_along_axis(lambda x: np.random.random(self.ndim_latens) < self.energy_z(x), 1, X)
 
     def inverse_transform(self, Z):
         def _it(z):
-            ps = np.cumsum(softmax(np.column_stack([x * np.dot(W, z) for x in range(self.n_values)]), axis=1), axis=1)
+            ps = np.cumsum(softmax(np.outer(np.arange(self.n_values), np.dot(W, z)), axis=1), axis=1)
             rv = np.random.random(p)
-            return [np.where(k)[0][0] for k in (rv[:,None] < ps)]
-        return np.array([_it(z) for z in Z])
+            return np.apply_along_axis(lambda x:np.where(x)[0][0], 1, (rv[:, None] < ps))
+        return np.apply_along_axis(_it, 1, Z)
 
 
     def fit(self, X):
-        X = self.init(X)
+        self.init(X)
         self._fit(X, self.max_iter, self.mc_iter, self.persistent)
         return self
 
@@ -145,8 +163,8 @@ class CDRBM(TransformerMixin):
                 index = np.random.choice(n_samples, int(n_samples//n_batchs))
                 X_batch = X[index]
                 XZ1 = [self.mcmc(x) for x in X_batch]
-                positive = np.mean([np.outer(x, pz) for x, (_, pz, _) in zip(X_batch, XZ1)], axis=0)
-                negative = np.mean([np.outer(x, pz1) for x, _, pz1 in XZ1], axis=0)
+                positive = np.mean([self.denergy(x, pz) for x, (_, pz, _) in zip(X_batch, XZ1)], axis=0)
+                negative = np.mean([self.denergy(x, pz1) for x, _, pz1 in XZ1], axis=0)
                 DW = positive - negative
 
                 if persistent:
@@ -155,16 +173,18 @@ class CDRBM(TransformerMixin):
                 eta *= 0.99
                 self.weight_ += eta * DW
 
-    def generate(self, mc_iter=30, n_samples=None):
-        x0 = np.random.randint(self.n_values, size=rbm.n_features_)
-        x0[-1] =1
+    def generate(self, mc_iter=30, start=None, n_samples=None):
+        if start:
+            x0 = start
+        else:
+            x0 = np.random.randint(self.n_values, size=rbm.n_features_)
         x_, _, _ = self.mcmc(x0, mc_iter)
-        return x_[:-1]
+        return x_
 
 
 class BinaryCDRBM(CDRBM):
     """
-    Binary RBM by CD
+    Binary RBM by CD, X|Z ~ Bernoulli
 
     Example:
 
@@ -185,18 +205,21 @@ class BinaryCDRBM(CDRBM):
         x = X[4]
         xx = rbm.generate(mc_iter=30)
     """
+
     def mcmc(self, x, mc_iter=None):
-        return binary_gibbs(x, self.weight_, mc_iter or self.mc_iter)
+        return _binary_gibbs(x, self.weight_, mc_iter or self.mc_iter)
 
     def inverse_transform(self, Z):
-        return np.row_stack([np.random.random(self.n_features_) < expit(np.dot(W, z)) for z in Z])
+        return np.row_stack([np.random.random(self.n_features_) < expit(self.energy_x(z)) for z in Z])
 
 
-    def generate(self, mc_iter=30, n_samples=None):
-        x0 = bernoulli(0.5).rvs(size=self.n_features_)
-        x0[-1] =1
+    def generate(self, mc_iter=30, start=None, n_samples=None):
+        if start:
+            x0 = start
+        else:
+            x0 = bernoulli(0.5).rvs(size=self.n_features_)
         x_, _, _ = self.mcmc(x0, mc_iter)
-        return x_[:-1]
+        return x_
 
 
 if __name__ == '__main__':
@@ -208,9 +231,9 @@ if __name__ == '__main__':
 
     X = X_train[(y_train==0)]
 
-    rbm = CDRBM(ndim_latens=5, max_iter=500, mc_iter=1, persistent=False)
+    rbm = CDRBM(ndim_latens=4, max_iter=500, mc_iter=1, persistent=True)
     # number of values taken by x, {0,1,...16}
-    # rbm.n_values = 17 # currently, you have to set the attr. manually.
+    rbm.n_values = 17 # currently, you have to set the attr. manually.
     rbm.fit(X)
 
     # choose a sample
@@ -220,7 +243,7 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax = fig.subplots(1, 2)
-    size = 8, 8
+    size = 8, 8  # size of image
     ax[0].imshow(x.reshape(size))
     ax[0].set_title('A real digit')
     ax[1].imshow(x_.reshape(size))
